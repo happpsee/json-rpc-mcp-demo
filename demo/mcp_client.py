@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """迷你 MCP Client —— 扮演 AI Agent 那一端，把 MCP 的一生走一遍。
 
 跑法：python3 mcp_client.py
@@ -11,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import atexit
 import os
 import queue
 import subprocess
@@ -42,12 +44,21 @@ class McpPeer:
             if not line:
                 continue
             self.frames.put(line)
-            obj = json.loads(line)
-            if "method" not in obj:
-                self.router.resolve(obj)
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue                       # 对端吐了非 JSON，丢掉就是，读线程不能死
+            # 一帧也可能是批量（场景 M7 就会收到一个数组），所以逐个元素看。
+            # 早先这里直接把整帧交给 router，遇到数组当场 AttributeError ——
+            # 读线程一死客户端就此全聋，后面每次调用都只能白等到超时。
+            for obj in (payload if isinstance(payload, list) else [payload]):
+                if isinstance(obj, dict) and "method" not in obj:
+                    self.router.resolve(obj)
             # 带 method 的（服务端主动发来的请求/通知）留在 frames 队列里，
             # 由 drain_until_response 按到达顺序处理 —— 只为让打印顺序和线缆顺序一致。
             # 真实客户端会直接在这个读线程里应答。
+        # 管道到头了：把还在等的调用一次性叫醒，否则调用方要白等满一个超时。
+        self.router.fail_all("对端已关闭管道")
 
     def handle_server_request(self, req):
         method, req_id = req.get("method"), req.get("id")
@@ -113,9 +124,10 @@ def main():
     print()
     print(wire.bold("  迷你 MCP：一套 JSON-RPC 方法名约定而已"))
     print(wire.dim("  传输 = stdio 换行分隔 JSON（与 MCP 官方 stdio 传输相同）"))
-    print(wire.dim("  本场演的是 Legacy 形态（2025-03-26 ~ 2025-11-25 那一代，有握手）"))
+    print(wire.dim("  本场演的是 Legacy 形态（2024-11-05 ~ 2025-11-25 那一代，有握手）"))
 
     peer = McpPeer()
+    atexit.register(peer.close)   # 中途抛异常也要收尸，别留孤儿进程
     time.sleep(0.3)
 
     # -----------------------------------------------------------------------

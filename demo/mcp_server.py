@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """迷你 MCP Server —— 在 jsonrpc.py 这套协议层之上，只加了「方法名的约定」。
 
 看清楚：这个文件没有 import 任何 MCP 库，也没写一行新的协议代码。
@@ -56,7 +57,13 @@ def ask_client(method, params, timeout=10.0):
     slot = router.register(req_id)
     write_frame(jsonrpc.make_request(method, params, req_id))
     log("↑ 反向请求 %s id=%s，等客户端回话" % (method, req_id))
-    return slot.result(timeout=timeout)
+    try:
+        return slot.result(timeout=timeout)
+    finally:
+        # 超时也好、对方回了也好，都把槽位摘掉。
+        # 规范没有超时概念（见 01-概念.md §7），所以「等多久、等不到怎么收场」
+        # 全是客户端自己的事 —— 包括善后。
+        router.discard(req_id)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +147,15 @@ TOOLS = [
 
 _WEATHER = {"北京": "晴，25°C，湿度 45%", "上海": "多云，28°C，湿度 70%"}
 
+# MRTR 第一轮铸出去的那个不透明句柄。真实实现会签名/加密并带上过期时间，
+# 这里固定成常量，只为演示「第二轮必须原样带回，而服务端必须校验」。
+MRTR_STATE = "opaque-state-token-7f3a"
+
+
+def _is_number(v):
+    # JSON 的 true 落到 Python 是 bool，而 bool 是 int 的子类 —— 不排掉就会被当成 1。
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
 
 @rpc.method("tools/list")
 def tools_list(cursor=None, **_ignored):
@@ -189,6 +205,12 @@ def tools_call(name=None, arguments=None, inputResponses=None,
 
     if name == "divide":
         a, b = arguments.get("a"), arguments.get("b")
+        if not _is_number(a) or not _is_number(b):
+            # ① 协议级：和上面 get_weather 同一条线 —— inputSchema 写的是 number，
+            # 送来的不是数，那就是请求结构不合 schema。
+            # 少了这一步，下面的 a / b 会抛 TypeError 被协议层兜成 -32603，
+            # 模型只看得到一句 Python 异常文本 —— 既不是①也不是②，两边都落不着。
+            raise JsonRpcError(jsonrpc.INVALID_PARAMS, "a、b 必须是数字", data={"a": a, "b": b})
         if b == 0:
             # ② 工具执行错误：模型看到这句话就知道该把 b 换掉
             return {"content": [{"type": "text", "text": "除数不能为 0，请换一个 b 再试"}],
@@ -229,9 +251,20 @@ def tools_call(name=None, arguments=None, inputResponses=None,
                 }],
                 # 服务端把「刚才办到哪了」铸成一个不透明句柄交给客户端保管，
                 # 下一轮由客户端原样带回 —— 状态不在服务端，这就是无状态的代价与办法。
-                "requestState": "opaque-state-token-7f3a",
+                "requestState": MRTR_STATE,
             }
-        answer = inputResponses[0]["result"]["content"]["text"]
+        # 第二轮：句柄必须校验。「不透明」说的是客户端看不懂，不是服务端不用看 ——
+        # 不校验就等于把状态的真实性也外包给了客户端，谁都能伪造一份续上来。
+        if requestState != MRTR_STATE:
+            raise JsonRpcError(jsonrpc.INVALID_PARAMS, "requestState 无效或已过期",
+                               data={"got": requestState})
+        try:
+            # 答案还要对得上第一轮点名的那条 inputRequest —— id 是两轮之间唯一的绳子
+            hit = next(r for r in inputResponses if isinstance(r, dict) and r.get("id") == "ir-1")
+            answer = hit["result"]["content"]["text"]
+        except (StopIteration, KeyError, TypeError):
+            raise JsonRpcError(jsonrpc.INVALID_PARAMS, "inputResponses 里没有 id=ir-1 的有效答案",
+                               data={"got": inputResponses})
         return {
             "resultType": "complete",
             "content": [{"type": "text", "text": "（第二轮返回，凭 requestState=%s）%s"
@@ -266,6 +299,13 @@ def handle_line(line):
 
 
 def main():
+    # stdio 传输的编码必须两端说死。子进程的 stdout 默认按 locale 编码，
+    # 中文 Windows 上是 cp936，而父进程按 UTF-8 读 —— 所有含中文的帧当场乱码。
+    # MCP 规范对此有明文：JSON-RPC messages MUST be UTF-8 encoded.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+
     log("已就绪（协议版本 %s），等待 initialize" % PROTOCOL_VERSION)
     for raw in sys.stdin:
         line = raw.strip()

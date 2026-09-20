@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import atexit
 import os
 import queue
 import subprocess
@@ -132,6 +133,7 @@ def main():
     print(wire.dim("  -->  客户端发出     <--  服务端回应     <~~  服务端主动推送"))
 
     peer = StdioPeer([sys.executable, SERVER])
+    atexit.register(peer.close)   # 中途抛异常也要收尸，别留孤儿进程
     time.sleep(0.3)  # 等服务端把就绪日志写完
 
     # -----------------------------------------------------------------------

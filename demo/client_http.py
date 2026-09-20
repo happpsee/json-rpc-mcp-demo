@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import atexit
 import os
 import subprocess
 import sys
@@ -69,6 +70,7 @@ def show(status, text):
 def main():
     global URL
     proc, port = start_server()
+    atexit.register(lambda: proc.terminate())   # 中途抛异常也要收尸
     URL = "http://127.0.0.1:%d/" % port
 
     print()

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """服务端 · HTTP 传输。
 
 注意看 import：业务方法一个字都没改，直接从 methods.py 拿现成的。
@@ -41,17 +42,37 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        # 只认 Content-Length 分帧。对端若用 chunked 传体（HTTP/1.1 允许），这里读不到长度，
+        # 体就原封不动留在 socket 里，下一轮会把 chunk 的长度行当成请求行 —— 连接当场错位，
+        # 后面每一发都作废。宁可明确回 411 并断开，也不要装作读到了一个空 body。
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            print("[http] <-- 411 Length Required（本 demo 只解 Content-Length 分帧）", file=sys.stderr)
+            self.close_connection = True      # 体还堆在 socket 里，这条连接不能再用了
+            self.send_response(411)
+            # HTTP/1.1 默认长连接，要断就得明说一声，别让客户端对着已关的 socket 重试
+            self.send_header("Connection", "close")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         length = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(length).decode("utf-8")
+        try:
+            body = self.rfile.read(length).decode("utf-8")
+        except UnicodeDecodeError:
+            # 报文不是合法 UTF-8 —— 这同样是「解析失败」，该走 -32700。
+            # 让 UnicodeDecodeError 穿透出去的话 socketserver 会直接掐掉连接，
+            # 客户端收到的是 ECONNRESET 而不是错误对象，上面第 2 条当场破功。
+            body = ""
         print("[http] --> %s" % body, file=sys.stderr)
 
         response = rpc.handle_raw(body)   # ← 和 stdio 版本调用的是同一个方法
 
         if response is None:
             # 事实标准 1：本就不该回任何报文 → 204，空体
+            # 204 连 Content-Length 都不该带（RFC 9110 §8.6 写的是 MUST NOT）：
+            # 「没有响应体」是这个状态码自带的语义，不需要再声明一次长度。
             print("[http] <-- 204 No Content（通知，按规范无响应）", file=sys.stderr)
             self.send_response(204)
-            self.send_header("Content-Length", "0")
             self.end_headers()
             return
 

@@ -21,10 +21,10 @@
 
 | 修订版 | 关键变化 |
 |---|---|
-| 2024-11-05 | 首版。传输是 HTTP+SSE **双端点**（一个 GET 开 SSE、一个 POST 发消息） |
+| 2024-11-05 | 首版。两种传输：stdio，以及 HTTP+SSE **双端点**（一个 GET 开 SSE、一个 POST 发消息） |
 | 2025-03-26 | 引入 **Streamable HTTP** 单端点传输；明确要求实现 **MUST 支持接收 JSON-RPC 批量** |
 | 2025-06-18 | **移除 JSON-RPC 批量**（changelog 第一条，PR #416）；新增 elicitation、structuredContent |
-| 2025-11-25 | 澄清输入校验错误归类（SEP-1303）；SSE 续传改良（SEP-1699） |
+| 2025-11-25 | 澄清输入校验错误归类（SEP-1303）；允许服务端随时断开 SSE 流、客户端凭 `Last-Event-ID` 续传（SEP-1699） |
 | **2026-07-28** | **当前版本。** 取消 initialize 握手、删掉会话、整体转为无状态；反向请求换成 MRTR |
 
 注意版本号的含义：它是 **最后一次做出向后不兼容改动的日期**，向后兼容的改动不递增版本号。
@@ -49,7 +49,7 @@
 
 2025-03-26 还写着 "implementations MAY support sending JSON-RPC batches, but **MUST support receiving**"，2025-06-18 整条删掉，此后没有恢复。在传输层也能验证：
 
-> The body of the POST request **MUST be a single JSON-RPC request or notification**.（2026-07-28 Streamable HTTP）
+> The body of the HTTP POST **MUST** be a single JSON-RPC *request* or *notification*.（2026-07-28 Streamable HTTP）
 
 所以：
 
@@ -66,7 +66,7 @@ demo 的 `mcp_server.py` 因为协议层是按纯 JSON-RPC 写的，扔给它一
 |---|---|---|
 | id 类型 | String / Number / **Null** | **只能 string 或 integer** |
 | id 为 null | 允许（是普通请求，不是通知） | **MUST NOT** |
-| id 复用 | 未规定 | 2025-03-26 ~ 2025-11-25：同一会话内不得复用<br>2026-07-28：不得与**在途**未响应的请求撞号 |
+| id 复用 | 未规定 | 2024-11-05 ~ 2025-11-25：同一会话内不得复用<br>2026-07-28：不得与**在途**未响应的请求撞号 |
 
 MCP 的原话：
 
@@ -147,8 +147,8 @@ stderr  → 日志
 - 删 `Mcp-Session-Id`
 - 删 GET 长连接端点（改用 `subscriptions/listen`：客户端 POST 一个 listen 请求并声明想订阅的通知类型，**它的响应流本身就是那条长连接**）
 - 删 SSE 断点续传（`Last-Event-ID` 与事件 ID）
-- 旧客户端来的 GET/DELETE 一律回 405，`Mcp-Session-Id` 与 `Last-Event-ID` 一律忽略
-- 新增头体镜像：POST 必须带 `Mcp-Method`（取自 method）与 `Mcp-Name`（取自 `params.name` 或 `params.uri`），服务端 **MUST 校验头与 body 一致**，不一致回 400 + `-32020`
+- 旧客户端来的 GET/DELETE **SHOULD** 回 405，`Mcp-Session-Id` 与 `Last-Event-ID` 一律忽略
+- 新增头体镜像：POST 必须带 `Mcp-Method`（取自 method）；`tools/call`、`resources/read`、`prompts/get` 还必须带 `Mcp-Name`（取自 `params.name` 或 `params.uri`）。服务端 **MUST 校验头与 body 一致**，不一致回 400 + `-32020`
 
 最后一条的动机写得很直白：**让负载均衡和网关不解析 body 就能路由**，同时防止「LB 按头路由、服务器按 body 执行」的分叉攻击。这是一个纯消息层协议被搬到真实网络基础设施上之后，必然会长出来的东西。
 
@@ -158,7 +158,7 @@ stderr  → 日志
 
 ## 4. 生命周期：从握手到无握手
 
-### Legacy（2025-03-26 ~ 2025-11-25）：三步握手
+### Legacy（2024-11-05 ~ 2025-11-25）：三步握手
 
 ```
 ① 客户端 --> {"jsonrpc":"2.0","method":"initialize","params":{
@@ -218,7 +218,7 @@ stderr  → 日志
 <-- {"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"除数不能为 0，请换一个 b 再试"}],"isError":true},"id":6}
 ```
 
-**为什么这么分？** 官方理由写得非常直白：协议错误是「models are less likely to be able to fix」的请求结构问题；工具执行错误则 "contains **actionable feedback** that language models can use to **self-correct and retry with adjusted parameters**"。
+**为什么这么分？** 官方理由写得非常直白：协议错误是「models are less likely to be able to fix」的请求结构问题；工具执行错误则 "contain **actionable feedback** that language models can use to **self-correct and retry with adjusted parameters**"。
 
 换句话说：**这条分界线是按「模型看了能不能自己改对」划的，不是按「谁的错」划的。**
 
@@ -258,7 +258,7 @@ else:
   - `-32020` HeaderMismatch / `-32021` MissingRequiredClientCapability / `-32022` UnsupportedProtocolVersion
 - 旧的 `-32002`（资源未找到）改用 `-32602`
 
-这是「保留区该怎么用」最权威的一个落地范例：**下游协议可以在实现段里再划分区，但绝不会去动 `-326xx` 那五个码。**
+这是「保留区该怎么用」最权威的一个落地范例：**下游协议可以在实现段里再划分区，但绝不会去动 JSON-RPC 自己占的那五个码**（`-32700` 与 `-32600 ~ -32603`）。
 
 ---
 
@@ -285,22 +285,24 @@ Legacy 时代的三类反向请求：`sampling/createMessage`（借客户端的�
 
 2026-07-28 明确规定**服务端不发起请求**：
 
-> A binding MUST deliver client-sent requests and notifications to the server, and server-sent responses and notifications to the client. **No other message direction exists** … servers do not initiate requests.
+> A binding MUST deliver client-sent requests and notifications to the server, and server-sent responses and notifications to the client. **No other message direction exists** … servers do not initiate JSON-RPC requests and clients do not send JSON-RPC responses.
 
 取而代之的是 **MRTR（Multi Round-Trip Requests）**：服务端把「我还需要什么」装进一个正常的 `result` 里回去。
 
 ```json
 第一轮
 <-- {"result":{"resultType":"input_required",
-               "inputRequests":[{"id":"ir-1","method":"sampling/createMessage","params":{...}}],
+               "inputRequests":{"ir-1":{"method":"sampling/createMessage","params":{...}}},
                "requestState":"opaque-state-token-7f3a"},"id":9}
 
 第二轮（客户端办完，用新的 id 重发原请求）
 --> {"method":"tools/call","params":{"name":"...","arguments":{...},
-     "inputResponses":[{"id":"ir-1","result":{...}}],
+     "inputResponses":{"ir-1":{...客户端给出的 result 本体...}},
      "requestState":"opaque-state-token-7f3a"},"id":10}
 <-- {"result":{"resultType":"complete","content":[...],"isError":false},"id":10}
 ```
+
+注意 `inputRequests` / `inputResponses` **是「对象（map）」不是数组**：键由服务端自己起名（本例 `"ir-1"`），在这一个请求范围内唯一；`inputResponses` 用同样的键回填，值就是客户端那一侧的 result 本体（`ElicitResult` / `CreateMessageResult` / `ListRootsResult`），不再套一层 `{"id":…, "result":…}`。`inputRequests` 与 `requestState` 都是可选的，但服务端 **MUST** 至少给出其中一个；客户端 **MUST** 原样回传 `requestState`，且 **MUST NOT** 去解析它。
 
 全程仍然是「客户端问、服务端答」的单向骨架。服务端把「刚才办到哪了」铸成一个不透明句柄交给客户端保管，下一轮原样带回——**状态不在服务端**。
 
@@ -308,7 +310,7 @@ Legacy 时代的三类反向请求：`sampling/createMessage`（借客户端的�
 
 > 看现场：MCP 场景 M6。两场并排跑一遍，差别一眼就看出来了。
 
-⚠️ demo 里 MRTR 的字段位置是按官方 changelog 的描述**示意**写的，未与 2026-07-28 的 schema 逐字比对。要落生产请以官方规范为准。
+⚠️ demo 的 `mcp_server.py` / `mcp_client.py` 把 `inputRequests` / `inputResponses` 写成了**数组**（`[{"id":"ir-1", …}]`），与上面的真实 schema（map）不同——那是按 changelog 文字示意写的，只为把「一个 result 里带着请求」这个形状演出来。字段名本身（`resultType` / `inputRequests` / `requestState` / `inputResponses`）与规范一致。要落生产请以官方规范为准。
 
 ### 顺带：Modern 还弃用/移除了这些
 
@@ -321,7 +323,7 @@ Roots、Sampling、Logging 三项特性整体标记为 Deprecated（至少 12 �
 ### 取消：同一个语义，两种传输给出相反的实现
 
 - **stdio 上**：客户端 MUST 发 `notifications/cancelled`（stdio 是单条共享信道，没有可关的流）
-- **Streamable HTTP 上**：反过来——"Closing the SSE response stream MUST be treated by the server as cancellation"，该版核心协议在 HTTP 上根本不定义客户端→服务端的取消通知
+- **Streamable HTTP 上**：反过来——"Closing the SSE response stream **MUST** be treated by the server as cancellation of that request."，该版核心协议在 HTTP 上根本不定义客户端→服务端的取消通知
 
 同一件事，两种传输的做法完全相反。这又一次印证了 01 篇第 7 节那句话：**JSON-RPC 不管连接语义，所以每一种传输都得自己把这块补齐，而且补出来的东西可以完全不一样。**
 
@@ -337,7 +339,7 @@ Roots、Sampling、Logging 三项特性整体标记为 Deprecated（至少 12 �
 
 `server/agent_runtime/sdk_tools/__init__.py:170` 的 `build_arcreel_mcp_server()` 调用 Claude Agent SDK 的 `create_sdk_mcp_server(name="arcreel", version="1.0.0", tools=[...])`，一次性注册 **58** 个进程内工具。单个工具用 SDK 的 `@tool(name, description, input_schema)` 装饰器定义——这三个参数**逐一对应 MCP 规范里 Tool 对象的 `name` / `description` / `inputSchema`**，`input_schema` 就是一份手写的 JSON Schema。
 
-工具返回 `{"content": [{"type": "text", "text": ...}], "is_error": bool}` 的 Python dict。注意这里有一次**字段名转换**：SDK 在 `claude_agent_sdk/__init__.py` 里把 Python 侧的 `is_error` 转成 MCP 线上的驼峰 `isError`，最终序列化进 JSON-RPC 的 `result`。所以第 5 节讲的那条「两类错误」分界，在 ArcReel 的工具里就是 `tool_error()` 与抛异常的区别。
+工具返回 `{"content": [{"type": "text", "text": ...}], "is_error": bool}` 的 Python dict。注意这里有一次**字段名转换**：SDK 在 `claude_agent_sdk/__init__.py:520`（`isError=result.get("is_error", False)`）里把 Python 侧的 `is_error` 转成 MCP 线上的驼峰 `isError`，最终序列化进 JSON-RPC 的 `result`。所以第 5 节讲的那条「两类错误」分界，在 ArcReel 的工具里就是 `tool_error()` 与抛异常的区别。
 
 `session_manager.py:1088` 通过 `ClaudeAgentOptions(mcp_servers={"arcreel": arcreel_server})` 注入，`allowed_tools` 里追加通配符 `"mcp__arcreel__*"`——**`mcp__<server名>__<工具名>` 就是 MCP 工具在 Claude 侧的实际命名规则**。
 
@@ -377,9 +379,11 @@ ArcReel 有三处 SSE（`assistant.py` 的会话流、`project_events.py` 的项
 | `data` 里装什么 | 应用自定义 JSON，靠 `event` 字段区分类型 | **一律是 JSON-RPC 消息**，不靠 event 名分类 |
 | 认证 | `?token=<jwt>` 查询参数 | `Authorization` 头 |
 
-最后一行的原因很具体，也解释了一个 MCP 的隐含约束：**浏览器的 `EventSource` 不能自定义请求头**。所以 ArcReel 的 SSE 认证只能退化成查询参数。而 MCP 的续传依赖 `Last-Event-ID` **请求头**——这等于说，**MCP Streamable HTTP 的客户端不能是裸浏览器 `EventSource`**。这就是「为什么 MCP 不长成 ArcReel SSE 那个样子」的技术原因。
+最后一行的原因很具体，也解释了一个 MCP 的隐含约束：**浏览器的 `EventSource` 只会发 GET，而且不能自定义请求头**。所以 ArcReel 的 SSE 认证只能退化成查询参数。而 MCP 反过来：现行版里每一条消息都是**带头的 POST**——`Accept` 要同时列出两种类型、`MCP-Protocol-Version` 必带、`Mcp-Method` 必带（`tools/call` 等还要 `Mcp-Name`），认证走 `Authorization`。这等于说，**MCP Streamable HTTP 的客户端不能是裸浏览器 `EventSource`**，必须是能自己拼 POST 请求头的 HTTP 客户端（浏览器里就是 `fetch` + 手工解析 SSE）。这就是「为什么 MCP 不长成 ArcReel SSE 那个样子」的技术原因。
 
-（`tasks.py` 那条流确实实现过与 MCP resumability 同构的断线续传——SSE event id + `Last-Event-ID` / `last_event_id` 双入口。但它已标记 `deprecated=True`，前端改为轮询 `GET /tasks`，现在是只被单测覆盖的历史实现。拿它做对照可以，别当成在用的东西。）
+> 补一句版本归属：Streamable HTTP 那套（2025-03-26 引入，属 Legacy 时代的后半段）还额外依赖 `Last-Event-ID` **请求头**做断线续传，那是同一结论的另一条佐证；但 2026-07-28 已把续传与事件 ID 整个删掉（"Resumable SSE streams via `Last-Event-ID` are not supported."），所以今天再拿续传当理由就挂错版本了——现行的理由是上面那串必带请求头。
+
+（`tasks.py` 那条流确实实现过与 MCP **Legacy** resumability 同构的断线续传——SSE event id + `Last-Event-ID` / `last_event_id` 双入口。但它已标记 `deprecated=True`（`tasks.py:305`），前端改为轮询 `GET /tasks`，现在是只被单测覆盖的历史实现。巧的是 MCP 自己也在 2026-07-28 把这套删了，两边同时退场。拿它做对照可以，别当成在用的东西。）
 
 ---
 

@@ -55,6 +55,13 @@ def serve_line(line: str) -> None:
 
 
 def main() -> None:
+    # stdio 传输的编码必须两端说死。子进程的 stdout 默认按 locale 编码，
+    # 中文 Windows 上是 cp936，而父进程按 UTF-8 读 —— 所有含中文的帧当场乱码。
+    # MCP 规范对此有明文：JSON-RPC messages MUST be UTF-8 encoded.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+
     methods.set_emitter(emit)          # stdio 传输有反向通道，把出口接上
     methods.set_log_sink(log)
     log("已就绪，等待 stdin 上的换行分隔 JSON。注册方法：%s" % ", ".join(rpc.method_names))

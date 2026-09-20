@@ -11,13 +11,16 @@
 
 ```bash
 cd demo
-python3 client_stdio.py     # ① 两端完整对话：13 个场景
+python3 client_stdio.py     # ① 两端完整对话：14 个场景（1–13 外加 3b）
 python3 client_http.py      # ② 同一套方法换 HTTP 传输
 python3 mcp_client.py       # ③ 在同一套协议层上搭一个迷你 MCP
 ```
 
 零依赖，Python 3.7+ 直接跑（实测 3.9.6）。不需要装任何包，不需要起服务——
-客户端会自己把服务端作为子进程拉起来。
+客户端会自己把服务端作为子进程拉起来。HTTP 那场会让系统分配一个空闲端口，不会撞上你本机已有的服务。
+
+从哪个目录跑都行（`python3 demo/client_stdio.py` 同样可以），`cd demo` 只是命令短一点。
+想一次跑完三场：`cd demo && ./run_all.sh`。
 
 屏幕上每一行 `-->` `<--` `<~~` 都是**真的在管道里流过的字节**，一个字符都没有美化过。
 

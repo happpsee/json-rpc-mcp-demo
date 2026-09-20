@@ -158,6 +158,10 @@ class Dispatcher:
             if not payload:
                 return make_error(None, INVALID_REQUEST)
 
+            # ⚠️ 规范没禁止同一批里出现重复 id，本实现也不查重 ——
+            #    但客户端收到两条同 id 的响应时，**根本无法分辨谁是谁**。
+            #    这是发送方的责任：一批之内 id 必须唯一。
+            #    （MCP 干脆把它写成了硬性规定，见 03-MCP传输层.md 的「减法二」。）
             responses = []
             for item in payload:
                 one = self._handle_one(item)
@@ -223,6 +227,12 @@ class Dispatcher:
         if "params" in req and not isinstance(params, (list, dict)):
             # §4.2 params 若出现，MUST 是 Array（按位置）或 Object（按名字）。
             # 标量 params 属于「不是合法的 Request 对象」，所以判 -32600 而非 -32602。
+            #
+            # ⚠️ 互操作坑：`"params": null` 算「出现」还是「省略」？规范没说。
+            # 本实现按「键在就算出现」判 → null 不是 Structured → -32600，
+            # 理由是这样才和上面 id 的判据（"id" in req）保持同一套逻辑。
+            # 但生态里确实有实现把显式 null 当成省略并正常放行。
+            # 结论：**自己发请求时永远不要写 "params": null，直接把这个键去掉。**
             return None if is_notification else make_error(
                 detected, INVALID_REQUEST, data="params 必须是数组或对象")
 
@@ -319,6 +329,16 @@ class ResponseRouter:
             return False
         slot.fill(response)
         return True
+
+    def discard(self, req_id: Any) -> bool:
+        """放弃一个未决请求，把槽位从表里摘掉。
+
+        超时之后必须调它，否则槽位会永远留在表里：
+        长跑的进程每超时一次就漏一个，而迟到的响应还会被它悄悄认领掉，
+        连「收到一个没人认领的响应」这样的日志都不会打出来。
+        """
+        with self._lock:
+            return self._pending.pop(_key(req_id), None) is not None
 
     def pending_count(self) -> int:
         with self._lock:
