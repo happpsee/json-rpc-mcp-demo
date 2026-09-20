@@ -16,7 +16,17 @@ python3 client_http.py      # ② 同一套方法换 HTTP 传输
 python3 mcp_client.py       # ③ 在同一套协议层上搭一个迷你 MCP
 ```
 
-零依赖，Python 3.7+ 直接跑（实测 3.9.6）。不需要装任何包，不需要起服务——
+**也有 TypeScript 版**（[`demo-ts/`](demo-ts/)，协议行为完全一致）：
+
+```bash
+cd demo-ts && pnpm install && pnpm stdio
+```
+
+两份放在一起看，能分清哪些是协议要求、哪些只是某个语言的便利或代价——
+比如 `result`/`error` 的互斥在 TS 里可以编进类型系统，而 by-name 传参的参数名
+Python 靠 `inspect.signature` 白拿、JS 必须显式声明。详见 [demo-ts/README.md](demo-ts/README.md)。
+
+Python 版零依赖，3.7+ 直接跑（实测 3.9.6）。不需要装任何包，不需要起服务——
 客户端会自己把服务端作为子进程拉起来。HTTP 那场会让系统分配一个空闲端口，不会撞上你本机已有的服务。
 
 从哪个目录跑都行（`python3 demo/client_stdio.py` 同样可以），`cd demo` 只是命令短一点。

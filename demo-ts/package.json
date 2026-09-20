@@ -1,0 +1,17 @@
+{
+  "name": "json-rpc-demo-ts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "stdio": "tsx client.ts",
+    "http": "tsx client-http.ts",
+    "mcp": "tsx mcp-client.ts",
+    "all": "tsx client.ts && tsx client-http.ts && tsx mcp-client.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "@types/node": "^22.18.9"
+  }
+}
