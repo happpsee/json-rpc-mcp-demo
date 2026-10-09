@@ -1,157 +1,102 @@
-# JSON-RPC 2.0 讲解项目
+# JSON-RPC 2.0 与 MCP 教学演示
 
-把 [JSON-RPC 2.0 官方规范](https://www.jsonrpc.org/specification) 和一篇中文工程解析
-《JSON-RPC 2.0 协议深度解析：从原理到 MCP 传输层实现》融合成一份能跑起来的教材。
+这是一个**教学演示项目**，不是能直接用的库。
 
-**用规范当裁判，用工程文当叙事，用可运行的 demo 当证据。**
+它做一件事：**手写一遍 JSON-RPC 2.0 的协议层，再在这层上面搭一个 MCP 服务端**，全程不依赖任何 JSON-RPC 或 MCP 库。协议要守的规矩、容易写错的地方，都在代码里能看见。
 
----
+跑完你能回答这几个问题：
 
-## 三分钟上手
+- `id` 到底为什么不能省？把 `{"id": null}` 当成通知会出什么事？
+- 通知为什么不能回响应？回 `200 + 空字符串` 会怎样？
+- MCP 2026-07-28 为什么把 `initialize` 握手删了？不握手的话每条请求要自带什么？
+- 「工具执行失败」和「协议级错误」为什么要分成两种回法？
 
-```bash
-cd demo
-python3 client_stdio.py     # ① 两端完整对话：14 个场景（1–13 外加 3b）
-python3 client_http.py      # ② 同一套方法换 HTTP 传输
-python3 mcp_client.py       # ③ 在同一套协议层上搭一个迷你 MCP
-```
+## 内容
 
-**也有 TypeScript 版**（[`demo-ts/`](demo-ts/)，协议行为完全一致）：
+| 读什么 | 是什么 |
+|---|---|
+| [JSON-RPC.md](JSON-RPC.md) | 协议讲了什么，坑在哪，手写实现最容易错的三处 |
+| [MCP.md](MCP.md) | MCP 在 JSON-RPC 上加了哪些限制，新版为什么没有握手 |
+| [MCP报文对照.md](MCP报文对照.md) | 每条报文的字段，逐字段标出是 JSON-RPC 定的（J）、MCP 定的（M），还是自己定的（自） |
+| [抓包实录.md](抓包实录.md) | 从本仓库代码真实跑出来的完整报文，不想跑就看这个 |
 
-```bash
-cd demo-ts && pnpm install && pnpm stdio
-```
-
-两份放在一起看，能分清哪些是协议要求、哪些只是某个语言的便利或代价——
-比如 `result`/`error` 的互斥在 TS 里可以编进类型系统，而 by-name 传参的参数名
-Python 靠 `inspect.signature` 白拿、JS 必须显式声明。详见 [demo-ts/README.md](demo-ts/README.md)。
-
-Python 版零依赖，3.7+ 直接跑（实测 3.9.6）。不需要装任何包，不需要起服务——
-客户端会自己把服务端作为子进程拉起来。HTTP 那场会让系统分配一个空闲端口，不会撞上你本机已有的服务。
-
-从哪个目录跑都行（`python3 demo/client_stdio.py` 同样可以），`cd demo` 只是命令短一点。
-想一次跑完三场：`cd demo && ./run_all.sh`。
-
-屏幕上每一行 `-->` `<--` `<~~` 都是**真的在管道里流过的字节**，一个字符都没有美化过。
-
----
-
-## 该按什么顺序读
-
-| 顺序 | 文件 | 讲什么 |
-|---|---|---|
-| 1 | [01-概念.md](01-概念.md) | 信封四件套、id 为什么是承重墙、通知、错误码三块地、批量、**规范不管的那些事** |
-| 2 | `demo/client_stdio.py` 跑一遍 | 把上面每一条都看见 |
-| 3 | [02-规范逐条对照.md](02-规范逐条对照.md) | 可执行的合规校验清单：规范每一条 → demo 哪一行实现了它 |
-| 4 | [03-MCP传输层.md](03-MCP传输层.md) | MCP 在 JSON-RPC 上加了什么、**减了什么**，以及你项目里那条链路 |
-| 5 | [04-原文勘误.md](04-原文勘误.md) | 从别人的错里学——包括官方 SDK 犯的那个 |
-| — | [抓包实录.md](抓包实录.md) | 三个 demo 的完整运行输出，不想跑代码就直接读这个 |
-
-赶时间的话：**只读 01 篇的第 2 节（id）和第 7 节（规范不管什么）**，那两节是整份材料里最值钱的部分。
-
----
-
-## demo 的结构
-
-```
-                    ┌──────────────────────────────────────┐
-                    │  jsonrpc.py  协议核心层（零依赖）     │
-                    │  ─────────────────────────────────    │
-                    │  Dispatcher      服务端：报文 → 调用  │
-                    │  ResponseRouter  客户端：id → 未决表  │
-                    └───────────────┬──────────────────────┘
-                                    │  它完全不知道自己跑在什么上面
-          ┌─────────────────────────┼─────────────────────────┐
-          │                         │                         │
-   ┌──────┴───────┐        ┌────────┴────────┐       ┌────────┴────────┐
-   │ stdio 传输    │        │  HTTP 传输       │       │  迷你 MCP        │
-   │ 换行分隔 JSON │        │  POST + 状态码   │       │  方法名约定      │
-   ├──────────────┤        ├─────────────────┤       ├─────────────────┤
-   │server_stdio  │        │ server_http     │       │ mcp_server      │
-   │client_stdio  │        │ client_http     │       │ mcp_client      │
-   └──────┬───────┘        └────────┬────────┘       └─────────────────┘
-          │                         │
-          └─────── methods.py ──────┘
-              业务方法表，两种传输共用一份
-              （「与传输无关」不是口号，是这条共享线）
-```
+代码只有两个文件：
 
 | 文件 | 干什么 |
 |---|---|
-| `jsonrpc.py` | 协议核心。每个判断旁边标了它对应规范的哪一节（§N），可以对照规范逐条读 |
-| `methods.py` | 业务方法表。里面**没有一行协议代码**——协议层已经挡干净了 |
-| `wire.py` | 线缆监听打印。`-->` `<--` 这套记号直接取自规范 §7 |
-| `server_stdio.py` / `client_stdio.py` | stdio 传输。场景 1 ~ 13（含 3b） |
-| `server_http.py` / `client_http.py` | HTTP 传输。场景 H1 ~ H8 |
-| `mcp_server.py` / `mcp_client.py` | 迷你 MCP。场景 M0 ~ M7 |
+| [`jsonrpc.ts`](jsonrpc.ts) | JSON-RPC 协议层。唯一入口 `jsonrpc(line, methods)`：收一行字符串，返一行字符串或 `null`。不分传输 |
+| [`demo.ts`](demo.ts) | 迷你 MCP 服务端。三个方法 `server/discover` / `tools/list` / `tools/call`，挂一张方法表到 stdio 或 HTTP 上 |
 
----
+`demo.ts` 没有 import 任何 MCP 库。它只是往 `jsonrpc.ts` 的方法表里塞了三个 MCP 规定好名字的方法，而且它不知道自己跑在哪种传输上——换传输只换最后 30 行。
 
-## 场景速查
+## 跑
 
-想直接看某个知识点的现场，对着这张表跑：
+需要 Node 22 以上。
 
-### stdio（`python3 client_stdio.py`）
+```bash
+pnpm install
+pnpm stdio        # stdio 传输：stdin 进一行，stdout 出一行
+pnpm http         # 同一张方法表，挂在 HTTP 上（监听 127.0.0.1:3000）
+pnpm typecheck    # tsc --noEmit（strict + noUncheckedIndexedAccess）
+```
 
-| 场景 | 看什么 |
+两种模式都不会自己发请求，等着你喂。stdio 版最简单的用法：
+
+```bash
+echo '{"jsonrpc":"2.0","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}},"id":1}' \
+  | npx tsx demo.ts
+```
+
+HTTP 版：
+
+```bash
+npx tsx demo.ts http &
+curl -s -X POST http://127.0.0.1:3000 -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}},"id":2}'
+```
+
+### 关于天气工具
+
+`tools/call` 里的 `get_weather` 会去请求 [`uapis.cn`](https://uapis.cn) 的公开天气接口，**不需要 API key**（实测带不带认证头返回一样）。这个网络调用是整个 demo 里唯一的真实副作用，你如果只想看协议行为不想联网，跳过 `tools/call` 就行。
+
+## 三个能直接看见的点
+
+**一、通知不回响应，判据是「有没有 id 这个键」。** 不是「值是不是 null」。
+
+```js
+const isNotification = !("id" in req);   // ✅
+const isNotification = req.id == null;   // ❌ 把 {"id": null} 也吞了
+```
+
+[`jsonrpc.ts`](jsonrpc.ts) 里就是这么判的。写错了的后果是：客户端发 `{"id": null}` 想拿结果，服务端当成通知一声不吭，客户端永远等。
+
+**二、`result` 和 `error` 只出现一个。** 规范原话是 "both members MUST NOT be included"。不出现指的是**没有这个键**，不是值为 null。
+
+**三、新版 MCP 没有握手。** 老版要 `initialize` → `notifications/initialized` 两轮，服务端得记住这条连接握过手。2026-07-28 把这两条删了，改成每个请求自己带 `_meta`：
+
+```json
+{"method":"tools/list","params":{"_meta":{
+  "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+  "io.modelcontextprotocol/clientCapabilities":{}
+}},"id":1}
+```
+
+服务端逐条看：没带 → `-32602`；版本不支持 → `-32022`（`data.supported` 里列出支持的版本）；都对 → 正常处理。服务端什么都不记，所以一个请求落到哪台机器都能处理。
+
+## 故意没做的部分
+
+这是学习用的 demo，**故意不做边界防御**。往产品里搬之前至少要补：
+
+| 缺什么 | 后果 |
 |---|---|
-| 1 / 2 | 按位置传参 vs 按名字传参，同一个服务端函数 |
-| 3 | 通知：服务端一个字都不回 |
-| **3b** | **`id: null` 不是通知** —— 被融合那篇文章最大的一处错 |
-| 4 | 方法不存在 → -32601，id 连类型一起原样奉还 |
-| 5 | 参数对不上 → -32602，调用前就判出来了 |
-| 6 | 非法 JSON → -32700，id 必须是 null |
-| 7 | **无效请求长得像通知，照样得回** —— 90% 手写实现会写错 |
-| 8 | 三种错误码分别该落哪块地 + 未捕获异常怎么兜 |
-| **9** | **★ 响应乱序返回，靠 id 认领** —— 整个协议的承重墙 |
-| **10** | **★ 服务端主动推送** —— JSON-RPC 不是单行道 |
-| 11 | 批量：6 个请求 5 条响应，混了通知、非法元素、未知方法 |
-| 12 | 整批都是通知 → 连 `[]` 都不能回 |
-| 13 | `[]` 回单个对象，`[1]` 回单元素数组 |
+| id 类型校验 | `{"id": {"a":1}}` 这种会被原样回填 |
+| 消息大小上限 | 一行超长 JSON 直接吃内存 |
+| HTTP 三个头校验 | `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` 没跟 body 核对（规范要求对不上回 400 + `-32020`） |
+| 规范要求的 4xx | HTTP 版只做了 200 / 202 / 405，版本不支持该回 400 而不是 200 |
+| 工具的 `divide`、`greet` | 文档里提到的「工具执行错误 `isError`」和「MRTR `input_required`」两种回法在代码里有讲到，但当前 `demo.ts` 只实现了 `get_weather` 一个工具 |
 
-### HTTP（`python3 client_http.py`）
+已知的一处浪费：`complete()` 给**每条**响应都加了 `_meta.serverInfo`，而这个字段里内嵌了一张 5 KB 多的 base64 图标，导致响应普遍涨到 6 KB 上下。规范只要求 `resultType: "complete"`，图标本该只在 `server/discover` 里报一次。这个坑留着没改，它演示的是「规范没禁，不代表应该这么做」。详见[抓包实录.md](抓包实录.md)文末。
 
-| 场景 | 看什么 |
-|---|---|
-| H2 | **通知在 HTTP 上是 204 No Content**，不是「200 + 空字符串」 |
-| H3 | **JSON-RPC 错误 ≠ HTTP 错误**：-32601 配 HTTP 200 |
-| H5 | 批量在 HTTP 下省的是**往返次数**，这才是 §6 的主要动机 |
-| H7 | HTTP 缺了什么：同一个方法，在 stdio 上能推通知，这里推不出去 |
+## 文档校对基准
 
-### 迷你 MCP（`python3 mcp_client.py`）
-
-| 场景 | 看什么 |
-|---|---|
-| M1 | 握手三步，第三步是**通知**（官方 SDK 就在这里写错了） |
-| **M4** | **★ 两类错误：`error` 给程序看，`result.isError` 给模型看** |
-| **M5** | **★ Legacy：服务端反过来请求客户端（sampling）** |
-| **M6** | **★ Modern：MRTR —— 同一件事，不再反向发请求** |
-| M7 | MCP 对 JSON-RPC 做的三条减法 |
-
----
-
-## 这份材料和两篇原文的关系
-
-| 原文 | 怎么用的 |
-|---|---|
-| 官方规范（2013-01-04 定稿） | **当裁判。** 所有 MUST / SHOULD 判定以它为准，引用一律标 §N |
-| 中文工程解析（2026-06-07） | **当叙事骨架。** 它的工程视角、安全小节、id 并发那段直觉都保留了 |
-
-融合时做的三件事：
-
-1. **补上规范里有而文章没讲的边界**——批量的三个空集合情况、`id: null` 的真实语义、无效请求与通知的优先级。
-2. **修掉文章与规范冲突的地方**——逐条列在 [04-原文勘误.md](04-原文勘误.md)，连同它那份 Node.js 实现里的真实 bug。
-3. **把 MCP 一章整体重写**——文章写的是 2025-03-26，现行规范已是 2026-07-28，中间隔了四个修订版，批量被删了、握手没了、反向请求换成了 MRTR。
-
-> MCP 相关事实核对自 modelcontextprotocol.io 官方规范，**核对日期 2026-09-20**。
-> MCP 迭代很快，看到本文半年以上请回官网复核。
-
----
-
-## 一句话总结
-
-JSON-RPC 只规定了「信封」长什么样——`jsonrpc` / `method` / `params` / `id` 四件套，
-外加 `result` 和 `error` 二选一。
-
-**信封怎么送（stdio、HTTP、WebSocket）它一概不管**，
-这既是它能当 MCP 底座的原因，也是你必须自己解决分帧、超时、取消的原因。
+MCP 改得快。[MCP.md](MCP.md) 对应 **2026-07-28** 版，2026-09-27 照官网核对过；隔半年回官网看一眼。

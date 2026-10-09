@@ -1,0 +1,17 @@
+{
+  "name": "json-rpc-mcp-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "教学演示：手写 JSON-RPC 2.0 协议层，并在其上搭一个 2026-07-28 版 MCP 服务端",
+  "scripts": {
+    "stdio": "tsx demo.ts",
+    "http": "tsx demo.ts http",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "@types/node": "^22.18.9"
+  }
+}
