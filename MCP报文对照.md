@@ -60,7 +60,15 @@ demo 里出现的每一种报文，逐字段标出来源。三种来源：
 | `.../clientCapabilities` | M | 必带。客户端会什么，啥都不会填 `{}` |
 | `.../clientInfo` | M 定字段，值自定 | 可选。`name`、`version` 字段名是 M 定的，填什么自己定 |
 
-每个 result 里都有的 `_meta`：
+每个 result 都有的 `_meta`。`serverInfo` 是**可选**的，本 demo 只在 `server/discover` 里报一次：
+
+```json
+"result": {
+  "resultType": "complete",
+  ...,
+  "_meta": {}                                                    // 绝大多数响应
+}
+```
 
 ```json
 "result": {
@@ -73,7 +81,7 @@ demo 里出现的每一种报文，逐字段标出来源。三种来源：
 | 字段 | 来源 | 说明 |
 |---|---|---|
 | `resultType` | M | 必带。`"complete"` 或 `"input_required"`，就这两个值 |
-| `.../serverInfo` | M 定字段，值自定 | 可选。服务端报个名 |
+| `.../serverInfo` | M 定字段，值自定 | 可选。服务端报个名。**可选的意思是「放哪、发几次」也由你定**，不必每条都带——见[抓包实录.md](抓包实录.md)文末 |
 
 下面各方法的 result 里，`resultType` 和 `_meta` 不再重复列。
 

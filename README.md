@@ -95,7 +95,21 @@ const isNotification = req.id == null;   // ❌ 把 {"id": null} 也吞了
 | 规范要求的 4xx | HTTP 版只做了 200 / 202 / 405，版本不支持该回 400 而不是 200 |
 | 工具的 `divide`、`greet` | 文档里提到的「工具执行错误 `isError`」和「MRTR `input_required`」两种回法在代码里有讲到，但当前 `demo.ts` 只实现了 `get_weather` 一个工具 |
 
-已知的一处浪费：`complete()` 给**每条**响应都加了 `_meta.serverInfo`，而这个字段里内嵌了一张 5 KB 多的 base64 图标，导致响应普遍涨到 6 KB 上下。规范只要求 `resultType: "complete"`，图标本该只在 `server/discover` 里报一次。这个坑留着没改，它演示的是「规范没禁，不代表应该这么做」。详见[抓包实录.md](抓包实录.md)文末。
+## 报文大小：可选字段选的是「放在哪、发几次」
+
+`server/discover` 要报服务端身份，里面带了一张内嵌的 webp 图标，base64 有 18060 个字符。
+规范里 `serverInfo` 是**可选**的，`icons` 更是可选里的可选——它放在哪一级、发几次，规范都没管。
+
+早期版本用 `complete()` 给**每一个** result 都挂上 `serverInfo`，于是每次工具调用都被这张图标撑大：
+
+| 响应 | 修复前 | 修复后 | 省下 |
+|---|---|---|---|
+| `server/discover` | 18437 字节 | **18437 字节** | 0 |
+| `tools/list` | 18484 字节 | **258 字节** | 18226 字节 |
+| `tools/call` | 18604 字节 | **378 字节** | 18226 字节 |
+
+现在图标收窄到只在 `server/discover` 出现一次，其余响应的 `_meta` 是空的 `{}`。
+`tools/call` 真正有用的天气数据就是 378 字节。详见[抓包实录.md](抓包实录.md)文末。
 
 ## 文档校对基准
 
