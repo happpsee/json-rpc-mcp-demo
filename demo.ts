@@ -22,7 +22,8 @@ const MCP_INFO = {
 };
 
 // 服务端身份。规范里 serverInfo 是「可选」，它在哪出现是我们的选择——
-// 只在 server/discover 报一次，不塞进每个 result（见 README「报文大小」）。
+// 只在 server/discover 报一次，不塞进每个 result：icons 那张 base64 有 18060 字符，
+// 每条响应都带会把 tools/call 从 378 字节撑到 18 KB。
 const SERVER_INFO = {
     name: "miniWeatherServer",
     version: "0.2.0",
